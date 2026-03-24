@@ -261,39 +261,107 @@ with tab3:
 with tab4:
     st.subheader("Carte des clusters IRIS")
 
-    geojson_path = os.path.join(DATA_DIR, "iris_contours.geojson")
-    
-    if not os.path.exists(geojson_path):
-        st.warning("⚠️ Fichier `iris_contours.geojson` manquant.")
-    else:
-        from streamlit_folium import st_folium
-        import folium
+    from data_collection import ensure_iris_geojson
+    import json
+    import folium
+    from streamlit_folium import st_folium
 
+    # 1) On prépare les données utiles pour le mapping
+    df_map = df[["IRIS", "cluster"]].dropna().copy()
+    df_map["IRIS"] = df_map["IRIS"].astype(str)
+    df_map = df_map.drop_duplicates(subset="IRIS")
+
+    if df_map.empty:
+        st.warning("Aucune donnée IRIS disponible pour la carte.")
+        st.stop()
+
+    cluster_by_iris = dict(zip(df_map["IRIS"], df_map["cluster"]))
+
+    color_map = {
+        c: CLUSTER_COLORS[i % len(CLUSTER_COLORS)]
+        for i, c in enumerate(sorted(df_map["cluster"].unique()))
+    }
+
+    # 2) On récupère le fichier préparé une seule fois dans data_collection.py
+    geojson_path = ensure_iris_geojson()
+
+    if geojson_path is None:
+        st.error("❌ Impossible d'afficher la carte : fichier GeoJSON indisponible.")
+        st.stop()
+
+    # 3) Lecture du fichier
+    try:
         with open(geojson_path, "r", encoding="utf-8") as f:
             geojson_data = json.load(f)
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la lecture du fichier GeoJSON : {e}")
+        st.stop()
 
-        m = folium.Map(location=[46.5, 2.5], zoom_start=6, tiles="CartoDB positron")
+    # 4) Filtrer uniquement les IRIS présents dans df
+    iris_set = set(df_map["IRIS"])
 
-        color_map = {c: CLUSTER_COLORS[i % len(CLUSTER_COLORS)] for i, c in enumerate(sorted(df["cluster"].unique()))}
+    geojson_data_filtered = {
+        "type": "FeatureCollection",
+        "features": [
+            feature
+            for feature in geojson_data.get("features", [])
+            if str(feature.get("properties", {}).get("code_iris", "")) in iris_set
+        ]
+    }
 
-        def style_fn(x):
-            iris = x["properties"].get("CODE_IRIS")
-            if iris in df["IRIS"].values:
-                cluster = df.loc[df["IRIS"] == iris, "cluster"].values[0]
-                return {
-                    "fillColor": color_map.get(cluster, "#ccc"),
-                    "color": "black", "weight": 0.2, "fillOpacity": 0.7
-                }
-            return {"fillColor": "#eee", "color": "black", "weight": 0.2}
+    if not geojson_data_filtered["features"]:
+        st.warning("Aucun contour IRIS correspondant aux données à afficher.")
+        st.stop()
 
-        folium.GeoJson(
-            geojson_data,
-            style_function=style_fn,
-            tooltip=folium.GeoJsonTooltip(fields=["CODE_IRIS", "NOM_IRIS"])
-        ).add_to(m)
+    # 5) Déterminer le centre de la carte
+    try:
+        coords = []
+        for feat in geojson_data_filtered["features"]:
+            geom = feat.get("geometry", {})
+            gtype = geom.get("type")
 
-        st_folium(m, width=900, height=600)
+            if gtype == "Polygon":
+                for ring in geom.get("coordinates", []):
+                    coords.extend(ring)
+            elif gtype == "MultiPolygon":
+                for polygon in geom.get("coordinates", []):
+                    for ring in polygon:
+                        coords.extend(ring)
 
+        if coords:
+            lon = sum(pt[0] for pt in coords) / len(coords)
+            lat = sum(pt[1] for pt in coords) / len(coords)
+            map_center = [lat, lon]
+        else:
+            map_center = [46.5, 2.5]
+    except Exception:
+        map_center = [46.5, 2.5]
+
+    # 6) Création carte
+    m = folium.Map(location=map_center, zoom_start=8, tiles="CartoDB positron")
+
+    def style_fn(feature):
+        iris = str(feature["properties"].get("code_iris", ""))
+        cluster = cluster_by_iris.get(iris)
+
+        return {
+            "fillColor": color_map.get(cluster, "#cccccc"),
+            "color": "black",
+            "weight": 0.2,
+            "fillOpacity": 0.7 if cluster is not None else 0.2,
+        }
+
+    folium.GeoJson(
+        geojson_data_filtered,
+        style_function=style_fn,
+        tooltip=folium.GeoJsonTooltip(
+            fields=["code_iris", "nom_iris"],
+            aliases=["Code IRIS", "Nom IRIS"]
+        )
+    ).add_to(m)
+
+    st_folium(m, width=900, height=600)
+    
 # ===========================================================================
 # ONGLET 5 — Données détaillées
 # ===========================================================================

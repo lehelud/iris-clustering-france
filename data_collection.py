@@ -357,9 +357,162 @@ def build_dataset():
     logger.info(f"Dataset enrichi sauvegardé ({df.shape[0]} lignes, {df.shape[1]} colonnes)")
     return df
 
+# ---------------------------------------------------------------------------
+# Téléchargement / récupération des contours IRIS (une seule fois)
+# ---------------------------------------------------------------------------
 
+def ensure_iris_geojson(force_rebuild=False):
+    """
+    Garantit la présence d'un GeoJSON IRIS local, léger et standardisé.
+
+    Sortie standardisée :
+        - code_iris
+        - nom_iris
+        - geometry
+
+    Le fichier final est conservé localement.
+    Les fichiers temporaires téléchargés/extraits sont supprimés.
+
+    Returns
+    -------
+    str | None
+        Chemin du GeoJSON préparé, ou None si échec.
+    """
+    import os
+    import shutil
+    import requests
+    import geopandas as gpd
+
+    try:
+        import py7zr
+    except ImportError:
+        logger.error("Le package 'py7zr' est requis : pip install py7zr")
+        return None
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    geojson_path = os.path.join(DATA_DIR, "iris_contours_light.geojson")
+    archive_path = os.path.join(DATA_DIR, "iris_contours.7z")
+    extract_dir = os.path.join(DATA_DIR, "iris_extract")
+
+    # Si déjà prêt, on le réutilise
+    if os.path.exists(geojson_path) and not force_rebuild:
+        logger.info("GeoJSON IRIS déjà présent en local.")
+        return geojson_path
+
+    candidate_urls = [
+        "https://data.geopf.fr/telechargement/download/CONTOURS-IRIS/CONTOURS-IRIS_3-0__GPKG_LAMB93_FXX_2025-01-01/CONTOURS-IRIS_3-0__GPKG_LAMB93_FXX_2025-01-01.7z",
+        "https://data.geopf.fr/telechargement/download/CONTOURS-IRIS/CONTOURS-IRIS_3-0__GPKG_LAMB93_FXX_2024-01-01/CONTOURS-IRIS_3-0__GPKG_LAMB93_FXX_2024-01-01.7z",
+    ]
+
+    downloaded = False
+    last_error = None
+
+    for url in candidate_urls:
+        try:
+            logger.info(f"Téléchargement des contours IRIS depuis {url}")
+            with requests.get(url, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with open(archive_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            downloaded = True
+            break
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            logger.warning(f"Échec du téléchargement : {e}")
+
+    if not downloaded:
+        logger.error(f"Impossible de télécharger les contours IRIS : {last_error}")
+        return None
+
+    if os.path.exists(extract_dir):
+        shutil.rmtree(extract_dir)
+    os.makedirs(extract_dir, exist_ok=True)
+
+    try:
+        with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+            archive.extractall(path=extract_dir)
+    except Exception as e:
+        logger.error(f"Impossible d'extraire l'archive : {e}")
+        return None
+
+    gpkg_path = None
+    for root, _, files in os.walk(extract_dir):
+        for file in files:
+            if file.lower().endswith(".gpkg"):
+                gpkg_path = os.path.join(root, file)
+                break
+        if gpkg_path:
+            break
+
+    if gpkg_path is None:
+        logger.error("Aucun fichier .gpkg trouvé après extraction.")
+        return None
+
+    try:
+        gdf = gpd.read_file(gpkg_path)
+
+        # Normalisation des noms de colonnes
+        rename_map = {}
+
+        cols_lower = {c.lower(): c for c in gdf.columns}
+
+        if "code_iris" in cols_lower:
+            rename_map[cols_lower["code_iris"]] = "code_iris"
+        elif "iris" in cols_lower:
+            rename_map[cols_lower["iris"]] = "code_iris"
+
+        if "nom_iris" in cols_lower:
+            rename_map[cols_lower["nom_iris"]] = "nom_iris"
+
+        gdf = gdf.rename(columns=rename_map)
+
+        if "code_iris" not in gdf.columns:
+            logger.error(f"Colonne code_iris introuvable. Colonnes disponibles : {list(gdf.columns)}")
+            return None
+
+        if "nom_iris" not in gdf.columns:
+            gdf["nom_iris"] = None
+
+        gdf["code_iris"] = gdf["code_iris"].astype(str)
+
+        # Projection pour Folium
+        if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
+            gdf = gdf.to_crs(epsg=4326)
+
+        # Simplification géométrique pour alléger l'affichage
+        gdf["geometry"] = gdf["geometry"].simplify(
+            tolerance=0.0008,
+            preserve_topology=True
+        )
+
+        # Colonnes finales standardisées
+        gdf = gdf[["code_iris", "nom_iris", "geometry"]].copy()
+
+        gdf.to_file(geojson_path, driver="GeoJSON")
+        logger.info(f"GeoJSON IRIS généré : {geojson_path}")
+
+    except Exception as e:
+        logger.error(f"Erreur lors de la préparation du GeoJSON IRIS : {e}")
+        return None
+
+    finally:
+        # Nettoyage des temporaires
+        try:
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir)
+        except Exception as cleanup_error:
+            logger.warning(f"Nettoyage partiel impossible : {cleanup_error}")
+
+    return geojson_path
+        
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     df = build_dataset()
+    ensure_iris_geojson()   # ← ajoute cette ligne
     print(df.head())
     print(df.shape)

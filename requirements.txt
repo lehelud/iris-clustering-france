@@ -14,3 +14,4 @@ scipy>=1.11.0
 yellowbrick>=1.5
 umap-learn>=0.5.3
 pyarrow>=13.0.0
+py7zr

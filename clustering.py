@@ -99,8 +99,12 @@ def find_optimal_k(X_scaled: np.ndarray, k_min: int = 3, k_max: int = 12):
 
         sil = silhouette_score(X_scaled, labels, sample_size=sample_size)
         db = davies_bouldin_score(X_scaled, labels)
-
-        results.append({"k": k, "silhouette": sil, "davies_bouldin": db})
+        results.append({
+            "k": k,
+            "silhouette": sil,
+            "davies_bouldin": db,
+            "inertia": km.inertia_   # ← ajouter cette ligne
+        })
         logger.info(f"Test K={k} → silhouette={sil:.3f}")
 
     df_metrics = pd.DataFrame(results)
@@ -170,7 +174,10 @@ def run_full_pipeline(df):
     logger.info(f"K optimal = {k_opt}")
 
     # Clustering final
-    labels, model = run_kmeans(X_scaled, k_opt)
+    # labels, model = run_kmeans(X_scaled, k_opt)
+    # Par :
+    k_force = 5  # None pour utiliser k_opt automatique
+    labels, model = run_kmeans(X_scaled, k_force if k_force else k_opt)
 
     # Réductions de dimension
     X_pca, _ = compute_pca(X_scaled)
