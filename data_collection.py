@@ -1,8 +1,8 @@
 """
 Module de collecte des données open data au niveau IRIS français.
-Version stable :
+Version : 2026-03-24_simplifiee
   - 100% données réelles INSEE (Filosofi + RP)
-  - BPE / Mobilités / SIRENE désactivés provisoirement (pas d'erreurs réseau)
+  - PAS de BPE / Mobilités / SIRENE (désactivés)
   - Imputations intelligentes sans warnings
 """
 
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+logger.info(">>> data_collection.py version 2026-03-24_simplifiee")
+
 # ---------------------------------------------------------------------------
 # Utilitaire ZIP → DataFrame
 # ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ def _zip_to_df(content_bytes, sep=";"):
         return pd.read_csv(z.open(csv_files[0]), sep=sep, dtype=str, low_memory=False)
 
 # ---------------------------------------------------------------------------
-# 1. Contours IRIS
+# 1. Contours IRIS (optionnel)
 # ---------------------------------------------------------------------------
 
 def download_iris_geojson():
@@ -103,23 +105,7 @@ def download_rp(theme):
         return pd.DataFrame({"IRIS": []})
 
 # ---------------------------------------------------------------------------
-# 4. BPE / Mobilités / SIRENE — désactivés provisoirement
-# ---------------------------------------------------------------------------
-
-def download_bpe(year=2022):
-    logger.info("BPE désactivé provisoirement (pas de téléchargement).")
-    return pd.DataFrame({"IRIS": [], "NB_EQUIPEMENTS": []})
-
-def download_mobpro(year=2020):
-    logger.info("Mobilités désactivées provisoirement (pas de téléchargement).")
-    return pd.DataFrame({"IRIS": [], "NB_DEPLACEMENTS": []})
-
-def download_sirene():
-    logger.info("SIRENE désactivé provisoirement (pas de téléchargement).")
-    return pd.DataFrame({"IRIS": [], "NB_ETABLISSEMENTS": []})
-
-# ---------------------------------------------------------------------------
-# 5. Fusion finale + imputations intelligentes
+# 4. Fusion finale + imputations intelligentes
 # ---------------------------------------------------------------------------
 
 def build_dataset():
@@ -131,9 +117,6 @@ def build_dataset():
     df_pop  = download_rp("population")
     df_log  = download_rp("logement")
     df_emp  = download_rp("emploi")
-    df_bpe  = download_bpe()
-    df_mob  = download_mobpro()
-    df_sir  = download_sirene()
 
     # Base = population
     df = df_pop.copy()
@@ -142,28 +125,19 @@ def build_dataset():
     df = df.merge(df_filo, on="IRIS", how="left")
     df = df.merge(df_log,  on="IRIS", how="left")
     df = df.merge(df_emp,  on="IRIS", how="left")
-    df = df.merge(df_bpe,  on="IRIS", how="left")
-    df = df.merge(df_mob,  on="IRIS", how="left")
-    df = df.merge(df_sir,  on="IRIS", how="left")
 
-    # Comptages → 0
-    for col in ["NB_EQUIPEMENTS", "NB_DEPLACEMENTS", "NB_ETABLISSEMENTS"]:
-        if col in df.columns:
-            df[col] = df[col].fillna(0)
+    # Conversion numérique + imputations
+    numeric_cols = []
+    for col in df.columns:
+        if col == "IRIS":
+            continue
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        if df[col].notna().any():
+            numeric_cols.append(col)
 
-    # Imputation médiane sur un set de colonnes connues
-    socio_cols = [
-        "DISP_MED20", "DISP_Q120", "DISP_Q320", "TP6020", "DISP_GI20",
-        "P20_POP", "P20_POP0014", "P20_POP6074", "P20_POP75P",
-        "P20_LOG", "P20_LOGVAC", "P20_RP_PROP",
-        "P20_ACTOCC15P", "P20_CHOM1564"
-    ]
-
-    for col in socio_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-            if df[col].notna().any():
-                df[col] = df[col].fillna(df[col].median())
+    for col in numeric_cols:
+        median = df[col].median()
+        df[col] = df[col].fillna(median)
 
     # Ratios dérivés (avec gestion des divisions par zéro)
     def safe_div(num, den):
