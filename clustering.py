@@ -1,10 +1,11 @@
 """
 Module de clustering des IRIS français.
-Améliorations :
-  - Enrichissement automatique (BPE, Mobilités, SIRENE)
-  - Pipeline plus robuste
+Version finale :
+  - Compatible avec dataset enrichi (data_collection.py)
+  - Pipeline robuste
   - Sélection du nombre optimal de clusters améliorée
   - Nettoyage renforcé
+  - PCA + UMAP
 """
 
 import os
@@ -12,7 +13,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
-from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 import logging
@@ -35,26 +36,6 @@ logger = logging.getLogger(__name__)
 DATA_DIR = "data"
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
-
-# ---------------------------------------------------------------------------
-# 🔥 NOUVEAU : Enrichissement des données
-# ---------------------------------------------------------------------------
-
-def enrich_dataset(df):
-    """
-    Ajoute automatiquement :
-      - BPE (nombre d'équipements)
-      - Mobilités (flux domicile-travail)
-      - SIRENE (nombre d'établissements)
-    """
-    try:
-        from data_enrichment import enrich_iris
-        logger.info("Enrichissement des données IRIS…")
-        df = enrich_iris(df)
-        logger.info("Enrichissement terminé.")
-    except Exception as e:
-        logger.warning(f"Impossible d'enrichir les données : {e}")
-    return df
 
 # ---------------------------------------------------------------------------
 # Préparation des features
@@ -124,7 +105,7 @@ def find_optimal_k(X_scaled: np.ndarray, k_min: int = 3, k_max: int = 12):
 
     df_metrics = pd.DataFrame(results)
 
-    # Sélection robuste : silhouette + Davies-Bouldin
+    # Sélection robuste : silhouette - 0.1 * Davies-Bouldin
     df_metrics["score"] = df_metrics["silhouette"] - df_metrics["davies_bouldin"] * 0.1
     k_optimal = int(df_metrics.loc[df_metrics["score"].idxmax(), "k"])
 
@@ -176,8 +157,8 @@ def save_results(df_labeled, profile, df_metrics):
 # ---------------------------------------------------------------------------
 
 def run_full_pipeline(df):
-    # 🔥 Enrichissement automatique
-    df = enrich_dataset(df)
+
+    logger.info("Dataset déjà enrichi via data_collection.py — aucune étape supplémentaire.")
 
     # Préparation
     X_scaled, iris_codes, feature_cols, scaler, imputer = prepare_features(df)
