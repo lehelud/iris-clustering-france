@@ -1,6 +1,7 @@
 """
 Application Streamlit - Rapport de Clustering des IRIS français
 Auteur : lehelud
+Version enrichie (BPE + Mobilités + SIRENE)
 """
 
 import os
@@ -26,24 +27,22 @@ DATA_DIR = "data"
 CLUSTER_COLORS = px.colors.qualitative.Set2 + px.colors.qualitative.Plotly
 
 # ---------------------------------------------------------------------------
-# Utilitaires de chargement
+# Chargement des données
 # ---------------------------------------------------------------------------
 
 @st.cache_data(show_spinner="Chargement des données de clustering...")
-def load_clustered_data(method="kmeans"):
-    path = os.path.join(RESULTS_DIR, f"iris_clustered_{method}.parquet")
+def load_clustered_data():
+    path = os.path.join(RESULTS_DIR, "iris_clustered.parquet")
     if not os.path.exists(path):
         return None
     return pd.read_parquet(path)
 
-
 @st.cache_data(show_spinner="Chargement du profil des clusters...")
-def load_profile(method="kmeans"):
-    path = os.path.join(RESULTS_DIR, f"cluster_profile_{method}.csv")
+def load_profile():
+    path = os.path.join(RESULTS_DIR, "cluster_profile.csv")
     if not os.path.exists(path):
         return None
     return pd.read_csv(path, index_col=0)
-
 
 @st.cache_data(show_spinner="Chargement des métriques de sélection...")
 def load_metrics():
@@ -52,29 +51,12 @@ def load_metrics():
         return None
     return pd.read_csv(path)
 
-
 @st.cache_data(show_spinner="Chargement des features brutes...")
 def load_features():
     path = os.path.join(DATA_DIR, "iris_features.parquet")
     if not os.path.exists(path):
         return None
     return pd.read_parquet(path)
-
-
-# ---------------------------------------------------------------------------
-# Noms lisibles des clusters
-# ---------------------------------------------------------------------------
-
-CLUSTER_NAMES = {
-    0: "Cluster 0 – À définir",
-    1: "Cluster 1 – À définir",
-    2: "Cluster 2 – À définir",
-    3: "Cluster 3 – À définir",
-    4: "Cluster 4 – À définir",
-    5: "Cluster 5 – À définir",
-    6: "Cluster 6 – À définir",
-    7: "Cluster 7 – À définir",
-}
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -85,28 +67,21 @@ with st.sidebar:
     st.title("🗺️ Clustering IRIS")
     st.markdown("---")
 
-    method = st.selectbox(
-        "Méthode de clustering",
-        options=["kmeans", "hierarchical"],
-        format_func=lambda x: {"kmeans": "K-Means", "hierarchical": "Hiérarchique"}[x],
-    )
-
-    st.markdown("---")
-    st.markdown("**Sources de données**")
+    st.markdown("### Sources de données enrichies")
     st.markdown("- INSEE Filosofi 2020 (revenus)")
-    st.markdown("- INSEE Recensement Population 2020")
-    st.markdown("- INSEE RP Logement 2020")
-    st.markdown("- INSEE RP Emploi 2020")
+    st.markdown("- INSEE RP 2020 (population, logement, emploi)")
+    st.markdown("- **BPE (Base Permanente des Équipements)**")
+    st.markdown("- **Mobilités domicile-travail**")
+    st.markdown("- **SIRENE (établissements)**")
     st.markdown("---")
-    st.markdown("*Données : millésime 2020*")
-    st.markdown("*Périmètre : France métropolitaine*")
+    st.markdown("*Millésime : 2020*")
 
 # ---------------------------------------------------------------------------
-# Chargement des fichiers
+# Chargement
 # ---------------------------------------------------------------------------
 
-df = load_clustered_data(method)
-profile = load_profile(method)
+df = load_clustered_data()
+profile = load_profile()
 metrics = load_metrics()
 df_features = load_features()
 
@@ -114,20 +89,23 @@ df_features = load_features()
 # Header
 # ---------------------------------------------------------------------------
 
-st.title("🗺️ Clustering des IRIS français")
+st.title("🗺️ Clustering enrichi des IRIS français")
 st.markdown(
     """
-    Ce rapport présente une **segmentation automatique des IRIS français** (Îlots Regroupés pour 
-    l'Information Statistique) à partir des données open data de l'INSEE. L'objectif est d'identifier 
-    des **groupes d'IRIS homogènes** sur des critères socio-économiques, démographiques et de logement.
+    Cette application présente une **segmentation enrichie des IRIS français**, intégrant :
+    - données socio-économiques INSEE,
+    - **équipements (BPE)**,
+    - **mobilités domicile-travail**,
+    - **tissu économique (SIRENE)**.
+
+    L’objectif est d’identifier des **profils territoriaux homogènes**.
     """
 )
 
-# ---- Données non disponibles ----
 if df is None or profile is None:
     st.warning(
-        "⚠️ Les résultats de clustering ne sont pas encore disponibles. "
-        "Veuillez d'abord exécuter le pipeline :\n\n"
+        "⚠️ Les résultats de clustering ne sont pas encore disponibles.\n"
+        "Exécutez d'abord :\n\n"
         "```bash\npython clustering.py\n```"
     )
     st.stop()
@@ -147,7 +125,7 @@ col3.metric("Variables utilisées", n_features)
 
 if metrics is not None:
     best_row = metrics.loc[metrics["silhouette"].idxmax()]
-    col4.metric("Silhouette score", f"{best_row['silhouette']:.3f}")
+    col4.metric("Silhouette max", f"{best_row['silhouette']:.3f}")
 
 st.markdown("---")
 
@@ -155,12 +133,13 @@ st.markdown("---")
 # ONGLETS
 # ===========================================================================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Vue d'ensemble",
     "🔍 Profil des clusters",
     "📉 Sélection du K",
     "🗺️ Carte",
     "📋 Données détaillées",
+    "📚 Sources enrichies",
 ])
 
 # ===========================================================================
@@ -172,46 +151,47 @@ with tab1:
 
     dist = df["cluster"].value_counts().sort_index().reset_index()
     dist.columns = ["cluster", "count"]
-    dist["label"] = dist["cluster"].map(lambda c: CLUSTER_NAMES.get(c, f"Cluster {c}"))
     dist["pct"] = (dist["count"] / dist["count"].sum() * 100).round(1)
 
     col_a, col_b = st.columns([1, 1])
 
     with col_a:
         fig_pie = px.pie(
-            dist, values="count", names="label",
-            color_discrete_sequence=CLUSTER_COLORS,
+            dist, values="count", names="cluster",
+            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
             title="Répartition des IRIS",
         )
-        fig_pie.update_traces(textposition="inside", textinfo="percent+label")
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col_b:
         fig_bar = px.bar(
-            dist, x="label", y="count",
-            color="label", color_discrete_sequence=CLUSTER_COLORS,
+            dist, x="cluster", y="count",
+            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
             text="pct",
-            labels={"label": "Cluster", "count": "Nombre d'IRIS"},
             title="Nombre d'IRIS par cluster",
         )
         fig_bar.update_traces(texttemplate="%{text}%", textposition="outside")
-        fig_bar.update_layout(showlegend=False)
         st.plotly_chart(fig_bar, use_container_width=True)
 
-    st.subheader("Visualisation PCA (2D)")
-    if "pca_x" in df.columns and "pca_y" in df.columns:
-        sample = df.sample(min(10000, len(df)), random_state=42)
-        sample["cluster_label"] = sample["cluster"].map(lambda c: CLUSTER_NAMES.get(c, f"Cluster {c}"))
+    st.subheader("Visualisation PCA / UMAP")
+
+    sample = df.sample(min(15000, len(df)), random_state=42)
+
+    if "pca_x" in df.columns:
         fig_pca = px.scatter(
             sample, x="pca_x", y="pca_y",
-            color="cluster_label",
-            color_discrete_sequence=CLUSTER_COLORS,
-            opacity=0.5,
-            labels={"pca_x": "PC1", "pca_y": "PC2", "cluster_label": "Cluster"},
-            title="Projection PCA des IRIS colorés par cluster",
+            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
+            opacity=0.5, title="Projection PCA (2D)",
         )
-        fig_pca.update_traces(marker=dict(size=3))
         st.plotly_chart(fig_pca, use_container_width=True)
+
+    if "umap_x" in df.columns:
+        fig_umap = px.scatter(
+            sample, x="umap_x", y="umap_y",
+            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
+            opacity=0.5, title="Projection UMAP (2D)",
+        )
+        st.plotly_chart(fig_umap, use_container_width=True)
 
 # ===========================================================================
 # ONGLET 2 — Profil des clusters
@@ -219,58 +199,43 @@ with tab1:
 
 with tab2:
     st.subheader("Profil moyen par cluster")
-    st.markdown(
-        "Le tableau ci-dessous présente les **valeurs moyennes** des indicateurs "
-        "pour chaque cluster. La heatmap normalisée permet de voir les points forts/faibles."
-    )
 
     feat_cols = [c for c in profile.columns if c != "n_iris"]
 
-    if len(feat_cols) > 0:
-        profile_norm = profile[feat_cols].copy()
-        for col in feat_cols:
-            col_min = profile_norm[col].min()
-            col_max = profile_norm[col].max()
-            if col_max > col_min:
-                profile_norm[col] = (profile_norm[col] - col_min) / (col_max - col_min)
+    profile_norm = profile[feat_cols].copy()
+    for col in feat_cols:
+        col_min, col_max = profile_norm[col].min(), profile_norm[col].max()
+        if col_max > col_min:
+            profile_norm[col] = (profile_norm[col] - col_min) / (col_max - col_min)
 
-        fig_heat = px.imshow(
-            profile_norm.T,
-            color_continuous_scale="RdYlGn",
-            aspect="auto",
-            title="Heatmap des profils de clusters (normalisé 0-1)",
-            labels={"x": "Cluster", "y": "Indicateur", "color": "Valeur norm."},
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
-
-    selected_cluster = st.selectbox(
-        "Sélectionner un cluster pour analyse détaillée",
-        options=sorted(df["cluster"].unique()),
-        format_func=lambda c: CLUSTER_NAMES.get(c, f"Cluster {c}"),
+    fig_heat = px.imshow(
+        profile_norm.T,
+        color_continuous_scale="RdYlGn",
+        aspect="auto",
+        title="Heatmap des profils (normalisé)",
     )
+    st.plotly_chart(fig_heat, use_container_width=True)
 
-    if selected_cluster in profile.index:
-        row = profile.loc[selected_cluster]
-        n = int(row.get("n_iris", 0))
-        st.info(f"Ce cluster regroupe **{n:,} IRIS** ({n/n_iris*100:.1f}% du total).")
+    selected_cluster = st.selectbox("Cluster à analyser", sorted(df["cluster"].unique()))
 
-        # Radar chart simple
-        feat_radar = [c for c in feat_cols if c in row.index][:12]
-        if len(feat_radar) >= 3:
-            vals_norm = []
-            for f in feat_radar:
-                c_min, c_max = profile[f].min(), profile[f].max()
-                vals_norm.append((row[f] - c_min) / (c_max - c_min) if c_max > c_min else 0.5)
+    row = profile.loc[selected_cluster]
+    st.info(f"Ce cluster regroupe **{row['n_iris']:,} IRIS**")
 
-            fig_radar = go.Figure()
-            fig_radar.add_trace(go.Scatterpolar(
-                r=vals_norm + [vals_norm[0]],
-                theta=feat_radar + [feat_radar[0]],
-                fill="toself",
-                line_color=CLUSTER_COLORS[selected_cluster % len(CLUSTER_COLORS)],
-            ))
-            fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=False)
-            st.plotly_chart(fig_radar, use_container_width=True)
+    # Radar chart
+    feat_radar = feat_cols[:12]
+    vals_norm = []
+    for f in feat_radar:
+        c_min, c_max = profile[f].min(), profile[f].max()
+        vals_norm.append((row[f] - c_min) / (c_max - c_min) if c_max > c_min else 0.5)
+
+    fig_radar = go.Figure()
+    fig_radar.add_trace(go.Scatterpolar(
+        r=vals_norm + [vals_norm[0]],
+        theta=feat_radar + [feat_radar[0]],
+        fill="toself",
+        line_color=CLUSTER_COLORS[selected_cluster % len(CLUSTER_COLORS)],
+    ))
+    st.plotly_chart(fig_radar, use_container_width=True)
 
 # ===========================================================================
 # ONGLET 3 — Sélection du K optimal
@@ -281,14 +246,13 @@ with tab3:
     if metrics is not None:
         col_m1, col_m2 = st.columns(2)
         with col_m1:
-            fig_elbow = px.line(metrics, x="k", y="inertia", markers=True, title="Méthode Elbow (inertie)")
+            fig_elbow = px.line(metrics, x="k", y="inertia", markers=True, title="Méthode Elbow")
             st.plotly_chart(fig_elbow, use_container_width=True)
         with col_m2:
-            fig_sil = px.bar(metrics, x="k", y="silhouette", color="silhouette", color_continuous_scale="Greens", title="Score de silhouette")
+            fig_sil = px.bar(metrics, x="k", y="silhouette", color="silhouette", title="Score silhouette")
             st.plotly_chart(fig_sil, use_container_width=True)
+
         st.dataframe(metrics.set_index("k").round(4), use_container_width=True)
-    else:
-        st.info("Les métriques de sélection du K ne sont pas disponibles.")
 
 # ===========================================================================
 # ONGLET 4 — Carte
@@ -296,36 +260,39 @@ with tab3:
 
 with tab4:
     st.subheader("Carte des clusters IRIS")
+
     geojson_path = os.path.join(DATA_DIR, "iris_contours.geojson")
     
     if not os.path.exists(geojson_path):
-        st.warning("⚠️ Fichier `iris_contours.geojson` manquant dans le dossier `/data`.")
+        st.warning("⚠️ Fichier `iris_contours.geojson` manquant.")
     else:
-        try:
-            from streamlit_folium import st_folium
-            import folium
+        from streamlit_folium import st_folium
+        import folium
 
-            with open(geojson_path, "r", encoding="utf-8") as f:
-                geojson_data = json.load(f)
+        with open(geojson_path, "r", encoding="utf-8") as f:
+            geojson_data = json.load(f)
 
-            m = folium.Map(location=[46.5, 2.5], zoom_start=6, tiles="CartoDB positron")
-            
-            # Simple color mapping logic
-            color_map = {c: CLUSTER_COLORS[i % len(CLUSTER_COLORS)] for i, c in enumerate(sorted(df["cluster"].unique()))}
+        m = folium.Map(location=[46.5, 2.5], zoom_start=6, tiles="CartoDB positron")
 
-            folium.GeoJson(
-                geojson_data,
-                style_function=lambda x: {
-                    "fillColor": color_map.get(df[df["IRIS"] == x["properties"].get("CODE_IRIS")]["cluster"].values[0], "#ccc") 
-                                 if x["properties"].get("CODE_IRIS") in df["IRIS"].values else "#eee",
+        color_map = {c: CLUSTER_COLORS[i % len(CLUSTER_COLORS)] for i, c in enumerate(sorted(df["cluster"].unique()))}
+
+        def style_fn(x):
+            iris = x["properties"].get("CODE_IRIS")
+            if iris in df["IRIS"].values:
+                cluster = df.loc[df["IRIS"] == iris, "cluster"].values[0]
+                return {
+                    "fillColor": color_map.get(cluster, "#ccc"),
                     "color": "black", "weight": 0.2, "fillOpacity": 0.7
-                },
-                tooltip=folium.GeoJsonTooltip(fields=["CODE_IRIS", "NOM_IRIS"])
-            ).add_to(m)
+                }
+            return {"fillColor": "#eee", "color": "black", "weight": 0.2}
 
-            st_folium(m, width=900, height=600)
-        except Exception as e:
-            st.error(f"Erreur Carte : {e}")
+        folium.GeoJson(
+            geojson_data,
+            style_function=style_fn,
+            tooltip=folium.GeoJsonTooltip(fields=["CODE_IRIS", "NOM_IRIS"])
+        ).add_to(m)
+
+        st_folium(m, width=900, height=600)
 
 # ===========================================================================
 # ONGLET 5 — Données détaillées
@@ -333,17 +300,39 @@ with tab4:
 
 with tab5:
     st.subheader("Données détaillées par IRIS")
+
     clusters_available = sorted(df["cluster"].unique())
     selected_clusters = st.multiselect("Filtrer par cluster", options=clusters_available, default=clusters_available)
 
     df_display = df[df["cluster"].isin(selected_clusters)].copy()
-    search = st.text_input("Rechercher un code ou nom IRIS")
+    search = st.text_input("Rechercher un code IRIS")
     if search:
         df_display = df_display[df_display["IRIS"].str.contains(search, case=False, na=False)]
 
     st.write(f"**{len(df_display):,} IRIS affichés**")
     st.dataframe(df_display.head(500), use_container_width=True, hide_index=True)
 
+# ===========================================================================
+# ONGLET 6 — Sources enrichies
+# ===========================================================================
+
+with tab6:
+    st.subheader("Sources enrichies utilisées dans le clustering")
+    st.markdown("""
+    ### 📌 Données intégrées automatiquement :
+    - **BPE (Base Permanente des Équipements)** : commerces, santé, éducation, sport, services
+    - **Mobilités domicile-travail** : flux entrants/sortants par IRIS
+    - **SIRENE** : nombre d’établissements actifs par IRIS
+    - **INSEE Filosofi 2020** : revenus, pauvreté, inégalités
+    - **INSEE RP 2020** : population, logement, emploi
+
+    Ces données permettent un **clustering territorial beaucoup plus riche**, capturant :
+    - attractivité locale,
+    - accessibilité aux services,
+    - dynamisme économique,
+    - structure socio-démographique.
+    """)
+
 # Footer
 st.markdown("---")
-st.markdown("**Sources** : INSEE 2020 | **Méthode** : K-Means / PCA / UMAP")
+st.markdown("**Sources** : INSEE 2020 | BPE | Mobilités | SIRENE | **Méthode** : K-Means / PCA / UMAP")
