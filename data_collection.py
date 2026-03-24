@@ -1,10 +1,9 @@
 """
 Module de collecte des données open data au niveau IRIS français.
 Version stable :
-  - 100% données réelles
-  - URLs corrigées
-  - Gestion propre des sources indisponibles
-  - Imputations intelligentes
+  - 100% données réelles INSEE (Filosofi + RP)
+  - BPE / Mobilités / SIRENE désactivés provisoirement (pas d'erreurs réseau)
+  - Imputations intelligentes sans warnings
 """
 
 import os
@@ -48,7 +47,7 @@ def download_iris_geojson():
     return out_path
 
 # ---------------------------------------------------------------------------
-# 2. FILOSOFI (URLs stables)
+# 2. FILOSOFI
 # ---------------------------------------------------------------------------
 
 FILOSOFI_URLS = [
@@ -104,82 +103,23 @@ def download_rp(theme):
         return pd.DataFrame({"IRIS": []})
 
 # ---------------------------------------------------------------------------
-# 4. BPE (URL corrigée)
+# 4. BPE / Mobilités / SIRENE — désactivés provisoirement
 # ---------------------------------------------------------------------------
 
-def download_bpe(year=2023):
-    url = f"https://www.insee.fr/fr/statistiques/fichier/7897985/bpe_{year}.zip"
-    out_path = os.path.join(DATA_DIR, f"bpe_{year}.parquet")
+def download_bpe(year=2022):
+    logger.info("BPE désactivé provisoirement (pas de téléchargement).")
+    return pd.DataFrame({"IRIS": [], "NB_EQUIPEMENTS": []})
 
-    if os.path.exists(out_path):
-        return pd.read_parquet(out_path)
-
-    try:
-        logger.info("Téléchargement BPE…")
-        r = requests.get(url, timeout=180)
-        r.raise_for_status()
-        df = _zip_to_df(r.content)
-        df["IRIS"] = df["IRIS"].str.zfill(9)
-        df["NB_EQUIPEMENTS"] = 1
-        df = df.groupby("IRIS")["NB_EQUIPEMENTS"].sum().reset_index()
-        df.to_parquet(out_path, index=False)
-        return df
-    except Exception as e:
-        logger.error(f"❌ BPE indisponible : {e}")
-        return pd.DataFrame({"IRIS": [], "NB_EQUIPEMENTS": []})
-
-# ---------------------------------------------------------------------------
-# 5. Mobilités domicile-travail (URL corrigée)
-# ---------------------------------------------------------------------------
-
-def download_mobpro(year=2019):
-    url = f"https://www.insee.fr/fr/statistiques/fichier/5395746/mobpro_{year}.csv"
-    out_path = os.path.join(DATA_DIR, f"mobpro_{year}.parquet")
-
-    if os.path.exists(out_path):
-        return pd.read_parquet(out_path)
-
-    try:
-        logger.info("Téléchargement Mobilités…")
-        df = pd.read_csv(url, sep=";", dtype=str)
-        df["NB_DEPLACEMENTS"] = df["IPONDI"].astype(float)
-        df = df.groupby("IRIS_RES")["NB_DEPLACEMENTS"].sum().reset_index()
-        df.rename(columns={"IRIS_RES": "IRIS"}, inplace=True)
-        df["IRIS"] = df["IRIS"].str.zfill(9)
-        df.to_parquet(out_path, index=False)
-        return df
-    except Exception as e:
-        logger.error(f"❌ Mobilités indisponibles : {e}")
-        return pd.DataFrame({"IRIS": [], "NB_DEPLACEMENTS": []})
-
-# ---------------------------------------------------------------------------
-# 6. SIRENE (URL corrigée)
-# ---------------------------------------------------------------------------
+def download_mobpro(year=2020):
+    logger.info("Mobilités désactivées provisoirement (pas de téléchargement).")
+    return pd.DataFrame({"IRIS": [], "NB_DEPLACEMENTS": []})
 
 def download_sirene():
-    url = "https://files.data.gouv.fr/insee-sirene/StockEtablissement_utf8.zip"
-    out_path = os.path.join(DATA_DIR, "sirene.parquet")
-
-    if os.path.exists(out_path):
-        return pd.read_parquet(out_path)
-
-    try:
-        logger.info("Téléchargement SIRENE…")
-        r = requests.get(url, timeout=240)
-        r.raise_for_status()
-        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            df = pd.read_csv(z.open("StockEtablissement_utf8.csv"), dtype=str)
-        df["IRIS"] = df["IRIS"].str.zfill(9)
-        df["NB_ETABLISSEMENTS"] = 1
-        df = df.groupby("IRIS")["NB_ETABLISSEMENTS"].sum().reset_index()
-        df.to_parquet(out_path, index=False)
-        return df
-    except Exception as e:
-        logger.error(f"❌ SIRENE indisponible : {e}")
-        return pd.DataFrame({"IRIS": [], "NB_ETABLISSEMENTS": []})
+    logger.info("SIRENE désactivé provisoirement (pas de téléchargement).")
+    return pd.DataFrame({"IRIS": [], "NB_ETABLISSEMENTS": []})
 
 # ---------------------------------------------------------------------------
-# 7. Fusion finale + imputations intelligentes
+# 5. Fusion finale + imputations intelligentes
 # ---------------------------------------------------------------------------
 
 def build_dataset():
@@ -195,8 +135,10 @@ def build_dataset():
     df_mob  = download_mobpro()
     df_sir  = download_sirene()
 
+    # Base = population
     df = df_pop.copy()
 
+    # Fusions
     df = df.merge(df_filo, on="IRIS", how="left")
     df = df.merge(df_log,  on="IRIS", how="left")
     df = df.merge(df_emp,  on="IRIS", how="left")
@@ -209,23 +151,42 @@ def build_dataset():
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
-    # Imputation médiane
+    # Imputation médiane sur un set de colonnes connues
     socio_cols = [
-        c for c in df.columns
-        if c not in ["IRIS", "COM", "TYP_IRIS", "LAB_IRIS"]
-        and df[c].dtype != object
+        "DISP_MED20", "DISP_Q120", "DISP_Q320", "TP6020", "DISP_GI20",
+        "P20_POP", "P20_POP0014", "P20_POP6074", "P20_POP75P",
+        "P20_LOG", "P20_LOGVAC", "P20_RP_PROP",
+        "P20_ACTOCC15P", "P20_CHOM1564"
     ]
 
     for col in socio_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-        df[col] = df[col].fillna(df[col].median())
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            if df[col].notna().any():
+                df[col] = df[col].fillna(df[col].median())
 
-    # Ratios dérivés
-    df["TAUX_CHOM"] = df["P20_CHOM1564"] / (df["P20_ACTOCC15P"] + df["P20_CHOM1564"])
-    df["TAUX_VACANCE"] = df["P20_LOGVAC"] / df["P20_LOG"]
-    df["TAUX_PROPRIO"] = df["P20_RP_PROP"] / df["P20_LOG"]
-    df["PART_JEUNES"] = df["P20_POP0014"] / df["P20_POP"]
-    df["PART_SENIORS"] = (df["P20_POP6074"] + df["P20_POP75P"]) / df["P20_POP"]
+    # Ratios dérivés (avec gestion des divisions par zéro)
+    def safe_div(num, den):
+        num = pd.to_numeric(num, errors="coerce")
+        den = pd.to_numeric(den, errors="coerce")
+        res = num / den
+        res[~np.isfinite(res)] = np.nan
+        return res
+
+    if {"P20_CHOM1564", "P20_ACTOCC15P"}.issubset(df.columns):
+        df["TAUX_CHOM"] = safe_div(df["P20_CHOM1564"], df["P20_ACTOCC15P"] + df["P20_CHOM1564"])
+
+    if {"P20_LOGVAC", "P20_LOG"}.issubset(df.columns):
+        df["TAUX_VACANCE"] = safe_div(df["P20_LOGVAC"], df["P20_LOG"])
+
+    if {"P20_RP_PROP", "P20_LOG"}.issubset(df.columns):
+        df["TAUX_PROPRIO"] = safe_div(df["P20_RP_PROP"], df["P20_LOG"])
+
+    if {"P20_POP0014", "P20_POP"}.issubset(df.columns):
+        df["PART_JEUNES"] = safe_div(df["P20_POP0014"], df["P20_POP"])
+
+    if {"P20_POP6074", "P20_POP75P", "P20_POP"}.issubset(df.columns):
+        df["PART_SENIORS"] = safe_div(df["P20_POP6074"] + df["P20_POP75P"], df["P20_POP"])
 
     df.to_parquet(out_path, index=False)
     logger.info(f"Dataset enrichi sauvegardé ({df.shape[0]} lignes, {df.shape[1]} colonnes)")
