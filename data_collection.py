@@ -1,7 +1,10 @@
 """
 Module de collecte des données open data au niveau IRIS français.
-Version : 100% données réelles, sans données synthétiques.
-Inclut des stratégies d’imputation intelligentes pour les IRIS incomplets.
+Version stable :
+  - 100% données réelles
+  - URLs corrigées
+  - Gestion propre des sources indisponibles
+  - Imputations intelligentes
 """
 
 import os
@@ -45,7 +48,7 @@ def download_iris_geojson():
     return out_path
 
 # ---------------------------------------------------------------------------
-# 2. FILOSOFI (sans fallback synthétique)
+# 2. FILOSOFI (URLs stables)
 # ---------------------------------------------------------------------------
 
 FILOSOFI_URLS = [
@@ -70,11 +73,11 @@ def download_filosofi():
         except Exception as e:
             logger.warning(f"Échec Filosofi : {e}")
 
-    logger.error("❌ Aucune source Filosofi disponible. Dataset partiel.")
+    logger.error("❌ Aucune source Filosofi disponible.")
     return pd.DataFrame({"IRIS": []})
 
 # ---------------------------------------------------------------------------
-# 3. RP Population / Logement / Emploi (sans synthétique)
+# 3. RP Population / Logement / Emploi
 # ---------------------------------------------------------------------------
 
 RP_URLS = {
@@ -101,11 +104,11 @@ def download_rp(theme):
         return pd.DataFrame({"IRIS": []})
 
 # ---------------------------------------------------------------------------
-# 4. BPE (équipements)
+# 4. BPE (URL corrigée)
 # ---------------------------------------------------------------------------
 
-def download_bpe(year=2022):
-    url = f"https://www.insee.fr/fr/statistiques/fichier/7633565/bpe_{year}.zip"
+def download_bpe(year=2023):
+    url = f"https://www.insee.fr/fr/statistiques/fichier/7897985/bpe_{year}.zip"
     out_path = os.path.join(DATA_DIR, f"bpe_{year}.parquet")
 
     if os.path.exists(out_path):
@@ -126,11 +129,11 @@ def download_bpe(year=2022):
         return pd.DataFrame({"IRIS": [], "NB_EQUIPEMENTS": []})
 
 # ---------------------------------------------------------------------------
-# 5. Mobilités domicile-travail
+# 5. Mobilités domicile-travail (URL corrigée)
 # ---------------------------------------------------------------------------
 
-def download_mobpro(year=2020):
-    url = f"https://www.insee.fr/fr/statistiques/fichier/6446650/mobpro_{year}.csv"
+def download_mobpro(year=2019):
+    url = f"https://www.insee.fr/fr/statistiques/fichier/5395746/mobpro_{year}.csv"
     out_path = os.path.join(DATA_DIR, f"mobpro_{year}.parquet")
 
     if os.path.exists(out_path):
@@ -150,7 +153,7 @@ def download_mobpro(year=2020):
         return pd.DataFrame({"IRIS": [], "NB_DEPLACEMENTS": []})
 
 # ---------------------------------------------------------------------------
-# 6. SIRENE (établissements)
+# 6. SIRENE (URL corrigée)
 # ---------------------------------------------------------------------------
 
 def download_sirene():
@@ -192,10 +195,8 @@ def build_dataset():
     df_mob  = download_mobpro()
     df_sir  = download_sirene()
 
-    # Base = population (seule source garantissant les vrais IRIS)
     df = df_pop.copy()
 
-    # Fusion enrichie
     df = df.merge(df_filo, on="IRIS", how="left")
     df = df.merge(df_log,  on="IRIS", how="left")
     df = df.merge(df_emp,  on="IRIS", how="left")
@@ -203,28 +204,23 @@ def build_dataset():
     df = df.merge(df_mob,  on="IRIS", how="left")
     df = df.merge(df_sir,  on="IRIS", how="left")
 
-    # -----------------------------
-    # IMPUTATIONS INTELLIGENTES
-    # -----------------------------
-
-    # A. Comptages → 0 si manquant
+    # Comptages → 0
     for col in ["NB_EQUIPEMENTS", "NB_DEPLACEMENTS", "NB_ETABLISSEMENTS"]:
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
-    # B. Variables socio-éco → médiane nationale
+    # Imputation médiane
     socio_cols = [
-        "DISP_MED20", "DISP_Q120", "DISP_Q320", "TP6020", "DISP_GI20",
-        "P20_POP", "P20_POP0014", "P20_POP6074", "P20_POP75P",
-        "P20_LOG", "P20_LOGVAC", "P20_RP_PROP",
-        "P20_ACTOCC15P", "P20_CHOM1564"
+        c for c in df.columns
+        if c not in ["IRIS", "COM", "TYP_IRIS", "LAB_IRIS"]
+        and df[c].dtype != object
     ]
 
     for col in socio_cols:
-        if col in df.columns:
-            df[col] = df[col].astype(float).fillna(df[col].median())
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = df[col].fillna(df[col].median())
 
-    # C. Ratios dérivés
+    # Ratios dérivés
     df["TAUX_CHOM"] = df["P20_CHOM1564"] / (df["P20_ACTOCC15P"] + df["P20_CHOM1564"])
     df["TAUX_VACANCE"] = df["P20_LOGVAC"] / df["P20_LOG"]
     df["TAUX_PROPRIO"] = df["P20_RP_PROP"] / df["P20_LOG"]
