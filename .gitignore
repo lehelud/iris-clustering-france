@@ -3,3 +3,13 @@ data/iris_contours_light.geojson
 data/*.7z
 data/*.gpkg
 data/iris_extract/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.env
+.venv/
