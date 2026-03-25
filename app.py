@@ -26,6 +26,17 @@ DATA_DIR = "data"
 # Palette couleurs distinctes pour les clusters
 CLUSTER_COLORS = px.colors.qualitative.Set2 + px.colors.qualitative.Plotly
 
+
+@st.cache_data(show_spinner=False)
+def load_cluster_names():
+    path = os.path.join(RESULTS_DIR, "cluster_names.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    # Convertir les clés en int
+    return {int(k): v for k, v in raw.items()}
+
 # ---------------------------------------------------------------------------
 # Chargement des données
 # ---------------------------------------------------------------------------
@@ -84,6 +95,12 @@ df = load_clustered_data()
 profile = load_profile()
 metrics = load_metrics()
 df_features = load_features()
+cluster_names = load_cluster_names()
+
+def cluster_label(cid):
+    """Retourne le label complet d'un cluster : 'Cluster N — Nom'."""
+    name = cluster_names.get(int(cid), "")
+    return f"Cluster {cid} — {name}" if name else f"Cluster {cid}"
 
 # ---------------------------------------------------------------------------
 # Header
@@ -152,35 +169,47 @@ with tab1:
     dist = df["cluster"].value_counts().sort_index().reset_index()
     dist.columns = ["cluster", "count"]
     dist["pct"] = (dist["count"] / dist["count"].sum() * 100).round(1)
+    dist["label"] = dist["cluster"].apply(cluster_label)
 
     col_a, col_b = st.columns([1, 1])
 
     with col_a:
         fig_pie = px.pie(
-            dist, values="count", names="cluster",
-            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
+            dist, values="count", names="label",
+            color="label", color_discrete_sequence=CLUSTER_COLORS,
             title="Répartition des IRIS",
         )
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col_b:
         fig_bar = px.bar(
-            dist, x="cluster", y="count",
-            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
+            dist, x="label", y="count",
+            color="label", color_discrete_sequence=CLUSTER_COLORS,
             text="pct",
             title="Nombre d'IRIS par cluster",
         )
         fig_bar.update_traces(texttemplate="%{text}%", textposition="outside")
+        fig_bar.update_layout(xaxis_tickangle=-30)
         st.plotly_chart(fig_bar, use_container_width=True)
+
+    # Tableau récapitulatif des noms
+    if cluster_names:
+        st.subheader("Profil des clusters")
+        names_df = pd.DataFrame([
+            {"Cluster": cid, "Nom": name, "IRIS": int(dist.loc[dist["cluster"] == cid, "count"].values[0]) if cid in dist["cluster"].values else 0}
+            for cid, name in sorted(cluster_names.items())
+        ])
+        st.dataframe(names_df, use_container_width=True, hide_index=True)
 
     st.subheader("Visualisation PCA / UMAP")
 
-    sample = df.sample(min(15000, len(df)), random_state=42)
+    sample = df.sample(min(15000, len(df)), random_state=42).copy()
+    sample["label"] = sample["cluster"].apply(cluster_label)
 
     if "pca_x" in df.columns:
         fig_pca = px.scatter(
             sample, x="pca_x", y="pca_y",
-            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
+            color="label", color_discrete_sequence=CLUSTER_COLORS,
             opacity=0.5, title="Projection PCA (2D)",
         )
         st.plotly_chart(fig_pca, use_container_width=True)
@@ -188,7 +217,7 @@ with tab1:
     if "umap_x" in df.columns:
         fig_umap = px.scatter(
             sample, x="umap_x", y="umap_y",
-            color="cluster", color_discrete_sequence=CLUSTER_COLORS,
+            color="label", color_discrete_sequence=CLUSTER_COLORS,
             opacity=0.5, title="Projection UMAP (2D)",
         )
         st.plotly_chart(fig_umap, use_container_width=True)
@@ -216,10 +245,20 @@ with tab2:
     )
     st.plotly_chart(fig_heat, use_container_width=True)
 
-    selected_cluster = st.selectbox("Cluster à analyser", sorted(df["cluster"].unique()))
+    cluster_options = sorted(df["cluster"].unique())
+    cluster_display = {cid: cluster_label(cid) for cid in cluster_options}
+    selected_cluster = st.selectbox(
+        "Cluster à analyser",
+        options=cluster_options,
+        format_func=lambda cid: cluster_display[cid],
+    )
 
     row = profile.loc[selected_cluster]
-    st.info(f"Ce cluster regroupe **{row['n_iris']:,} IRIS**")
+    name = cluster_names.get(int(selected_cluster), "")
+    if name:
+        st.success(f"**{cluster_label(selected_cluster)}** — {row['n_iris']:,} IRIS")
+    else:
+        st.info(f"Ce cluster regroupe **{row['n_iris']:,} IRIS**")
 
     # Radar chart
     feat_radar = feat_cols[:12]
@@ -270,12 +309,14 @@ with tab4:
     df_map = df[["IRIS", "cluster"]].dropna().copy()
     df_map["IRIS"] = df_map["IRIS"].astype(str)
     df_map = df_map.drop_duplicates(subset="IRIS")
+    df_map["cluster_label"] = df_map["cluster"].apply(cluster_label)
 
     if df_map.empty:
         st.warning("Aucune donnée IRIS disponible pour la carte.")
         st.stop()
 
     cluster_by_iris = dict(zip(df_map["IRIS"], df_map["cluster"]))
+    label_by_iris = dict(zip(df_map["IRIS"], df_map["cluster_label"]))
 
     color_map = {
         c: CLUSTER_COLORS[i % len(CLUSTER_COLORS)]
@@ -340,6 +381,11 @@ with tab4:
     # 6) Création carte
     m = folium.Map(location=map_center, zoom_start=8, tiles="CartoDB positron")
 
+    # Injecter le label de cluster dans les propriétés GeoJSON pour le tooltip
+    for feature in geojson_data_filtered["features"]:
+        iris_code = str(feature.get("properties", {}).get("code_iris", ""))
+        feature["properties"]["cluster_label"] = label_by_iris.get(iris_code, "Non classifié")
+
     def style_fn(feature):
         iris = str(feature["properties"].get("code_iris", ""))
         cluster = cluster_by_iris.get(iris)
@@ -355,8 +401,8 @@ with tab4:
         geojson_data_filtered,
         style_function=style_fn,
         tooltip=folium.GeoJsonTooltip(
-            fields=["code_iris", "nom_iris"],
-            aliases=["Code IRIS", "Nom IRIS"]
+            fields=["code_iris", "nom_iris", "cluster_label"],
+            aliases=["Code IRIS", "Nom IRIS", "Cluster"],
         )
     ).add_to(m)
 
@@ -370,9 +416,17 @@ with tab5:
     st.subheader("Données détaillées par IRIS")
 
     clusters_available = sorted(df["cluster"].unique())
-    selected_clusters = st.multiselect("Filtrer par cluster", options=clusters_available, default=clusters_available)
+    selected_clusters = st.multiselect(
+        "Filtrer par cluster",
+        options=clusters_available,
+        default=clusters_available,
+        format_func=cluster_label,
+    )
 
     df_display = df[df["cluster"].isin(selected_clusters)].copy()
+    if cluster_names:
+        df_display.insert(1, "nom_cluster", df_display["cluster"].apply(lambda c: cluster_names.get(int(c), "")))
+
     search = st.text_input("Rechercher un code IRIS")
     if search:
         df_display = df_display[df_display["IRIS"].str.contains(search, case=False, na=False)]
