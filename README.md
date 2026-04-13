@@ -1,4 +1,4 @@
-# 🗺️ Clustering des IRIS français
+# 🗺️ Clustering des IRIS français (http://37.59.98.254/clustering-iris/)
 
 > Segmentation automatique des IRIS (Îlots Regroupés pour l'Information Statistique) à partir des données open data INSEE — Rapport interactif Streamlit.
 >
