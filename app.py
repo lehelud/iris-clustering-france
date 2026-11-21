@@ -507,7 +507,7 @@ with tab4:
     except Exception:
         map_center = [46.5, 2.5]
 
-    m = folium.Map(location=map_center, zoom_start=8, tiles="CartoDB positron")
+    m = folium.Map(location=map_center, zoom_start=8, tiles="OpenStreetMap")
 
     folium.GeoJson(
         geojson_filtered,
