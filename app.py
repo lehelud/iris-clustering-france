@@ -213,7 +213,7 @@ with tab1:
             color_discrete_sequence=CLUSTER_COLORS,
             title="Répartition des IRIS",
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
     with col_b:
         fig_bar = px.bar(
@@ -223,7 +223,7 @@ with tab1:
         )
         fig_bar.update_traces(texttemplate="%{text}%", textposition="outside")
         fig_bar.update_layout(showlegend=False, xaxis_tickangle=-25, xaxis_title="")
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
     # Tableau récapitulatif
     if cluster_names:
@@ -241,7 +241,7 @@ with tab1:
                 "Part (%)": float(row["pct"]),
                 "Détails": desc,
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     # Projections dimensionnelles
     st.subheader("Visualisation PCA / UMAP")
@@ -254,7 +254,7 @@ with tab1:
             color_discrete_sequence=CLUSTER_COLORS,
             opacity=0.5, title="Projection PCA (2D)",
         )
-        st.plotly_chart(fig_pca, use_container_width=True)
+        st.plotly_chart(fig_pca, width="stretch")
 
     if "umap_x" in df.columns:
         fig_umap = px.scatter(
@@ -262,7 +262,7 @@ with tab1:
             color_discrete_sequence=CLUSTER_COLORS,
             opacity=0.5, title="Projection UMAP (2D)",
         )
-        st.plotly_chart(fig_umap, use_container_width=True)
+        st.plotly_chart(fig_umap, width="stretch")
 
 # ===========================================================================
 # ONGLET 2 — Profil des clusters
@@ -292,7 +292,7 @@ with tab2:
         title="Heatmap des profils (normalisé 0-1 inter-clusters)",
     )
     fig_heat.update_layout(height=500)
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat, width="stretch")
 
     st.markdown("---")
 
@@ -338,7 +338,7 @@ with tab2:
                 title=f"Profil radar — Cluster {selected_cluster}",
                 height=380,
             )
-            st.plotly_chart(fig_radar, use_container_width=True)
+            st.plotly_chart(fig_radar, width="stretch")
 
     # --- Top features distinctives ---
     with col_top:
@@ -371,7 +371,7 @@ with tab2:
             legend_title="", height=380,
         )
         fig_top.add_vline(x=0, line_dash="dash", line_color="gray")
-        st.plotly_chart(fig_top, use_container_width=True)
+        st.plotly_chart(fig_top, width="stretch")
 
     # --- Comparaison tous clusters sur une feature ---
     st.markdown("---")
@@ -394,7 +394,7 @@ with tab2:
         labels={"valeur": f"{feat_label(feat_choice)} {unit}", "label": ""},
     )
     fig_comp.update_layout(showlegend=False, xaxis_tickangle=-20)
-    st.plotly_chart(fig_comp, use_container_width=True)
+    st.plotly_chart(fig_comp, width="stretch")
 
 # ===========================================================================
 # ONGLET 3 — Sélection du K optimal
@@ -406,30 +406,30 @@ with tab3:
         c1, c2 = st.columns(2)
         with c1:
             fig_elbow = px.line(metrics, x="k", y="inertia", markers=True, title="Méthode Elbow (inertie)")
-            st.plotly_chart(fig_elbow, use_container_width=True)
+            st.plotly_chart(fig_elbow, width="stretch")
         with c2:
             fig_sil = px.bar(metrics, x="k", y="silhouette", color="silhouette",
                              color_continuous_scale="Viridis", title="Score Silhouette")
-            st.plotly_chart(fig_sil, use_container_width=True)
+            st.plotly_chart(fig_sil, width="stretch")
 
         c3, c4 = st.columns(2)
         with c3:
             fig_db = px.bar(metrics, x="k", y="davies_bouldin", color="davies_bouldin",
                             color_continuous_scale="Reds_r", title="Davies-Bouldin (↓ mieux)")
-            st.plotly_chart(fig_db, use_container_width=True)
+            st.plotly_chart(fig_db, width="stretch")
         with c4:
             if "calinski_harabasz" in metrics.columns:
                 fig_ch = px.bar(metrics, x="k", y="calinski_harabasz", color="calinski_harabasz",
                                 color_continuous_scale="Blues", title="Calinski-Harabasz (↑ mieux)")
-                st.plotly_chart(fig_ch, use_container_width=True)
+                st.plotly_chart(fig_ch, width="stretch")
 
         st.markdown("**Score composite** = 60% Silhouette + 25% Davies-Bouldin (inversé) + 15% Calinski-Harabasz (normalisés)")
         if "score" in metrics.columns:
             fig_score = px.bar(metrics, x="k", y="score", color="score",
                                color_continuous_scale="Greens", title="Score composite normalisé")
-            st.plotly_chart(fig_score, use_container_width=True)
+            st.plotly_chart(fig_score, width="stretch")
 
-        st.dataframe(metrics.set_index("k").round(4), use_container_width=True)
+        st.dataframe(metrics.set_index("k").round(4), width="stretch")
 
 # ===========================================================================
 # ONGLET 4 — Carte
@@ -551,7 +551,7 @@ with tab5:
         df_display = df_display[df_display["IRIS"].str.contains(search, case=False, na=False)]
 
     st.write(f"**{len(df_display):,} IRIS affichés**")
-    st.dataframe(df_display.head(500), use_container_width=True, hide_index=True)
+    st.dataframe(df_display.head(500), width="stretch", hide_index=True)
 
 # ===========================================================================
 # ONGLET 6 — Sources
