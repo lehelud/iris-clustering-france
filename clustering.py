@@ -1,9 +1,11 @@
 """
 Module de clustering des IRIS français.
-Version améliorée :
-  - Ingénierie de features : ratios sociodémographiques (PCT_CS*, LOG_POP, PCT_IMM, etc.)
-  - Sélection du K optimal automatique (silhouette + davies_bouldin + calinski_harabasz)
-  - Nommage automatique des clusters basé sur les profils relatifs
+Version améliorée v2 :
+  - Suppression des features redondantes (PCT_ETR ≈ PCT_IMM, r=0.97)
+  - Écrêtage des valeurs extrêmes (skew élevé sur PCT_CS1, PCT_CS2, PCT_IMM…)
+  - RobustScaler (résistant aux outliers résiduels)
+  - Score composite normalisé pour le K optimal
+  - Nommage corrigé + descriptions avec valeurs réelles
   - PCA + UMAP
 """
 
@@ -11,25 +13,19 @@ import os
 import json
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 from sklearn.impute import SimpleImputer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 from sklearn.decomposition import PCA
 import logging
 
-# ---------------------------------------------------------------------------
-# Tentative d'import UMAP
-# ---------------------------------------------------------------------------
 try:
     import umap
     UMAP_AVAILABLE = True
 except ImportError:
     UMAP_AVAILABLE = False
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -38,22 +34,15 @@ RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Features préférées pour le clustering (ratios vs comptes bruts)
-# Les ratios rendent le clustering invariant à la taille de l'IRIS
+# Features préférées (ratios) — ordonnées par priorité
 # ---------------------------------------------------------------------------
 
 PREFERRED_FEATURES = [
-    # Taille (log pour réduire l'asymétrie)
     'LOG_POP',
-    # Structure socio-professionnelle (% pop 15+)
     'PCT_CS1', 'PCT_CS2', 'PCT_CS3', 'PCT_CS4', 'PCT_CS5', 'PCT_CS6', 'PCT_CS7', 'PCT_CS8',
-    # Démographie
     'PART_JEUNES', 'PART_SENIORS', 'PCT_ACTIFS',
-    # Diversité
-    'PCT_IMM', 'PCT_ETR',
-    # Économie locale
+    'PCT_IMM',           # PCT_ETR exclu car r=0.97 avec PCT_IMM
     'DENSITE_ETAB',
-    # Marché du travail et logement (si disponibles)
     'TAUX_CHOM', 'TAUX_VACANCE', 'TAUX_PROPRIO',
 ]
 
@@ -64,8 +53,7 @@ PREFERRED_FEATURES = [
 def engineer_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Crée des features normalisées (ratios/pourcentages) à partir des comptes bruts.
-    Rend le clustering invariant à la taille de l'IRIS, ce qui améliore
-    significativement la qualité de la segmentation territoriale.
+    Rend le clustering invariant à la taille de l'IRIS.
     """
     result = df.copy()
 
@@ -84,11 +72,9 @@ def engineer_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
     pop = get_col('P21_POP', 'P20_POP')
     pop15p_csp = get_col('C21_POP15P', 'C20_POP15P')
 
-    # Taille de l'IRIS (log-transformée pour réduire l'asymétrie de distribution)
     if pop is not None:
         result['LOG_POP'] = np.log1p(pd.to_numeric(pop, errors='coerce'))
 
-    # Catégories socio-professionnelles en % de la pop 15+
     if pop15p_csp is not None:
         for cs_num in range(1, 9):
             cs_col = get_col(f'C21_POP15P_CS{cs_num}', f'C20_POP15P_CS{cs_num}')
@@ -96,21 +82,14 @@ def engineer_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
                 result[f'PCT_CS{cs_num}'] = safe_ratio(cs_col, pop15p_csp)
 
     if pop is not None:
-        # Proportion de la population en âge actif (20-64 ans)
         pop2064 = get_col('P21_POP2064', 'P20_POP2064')
         if pop2064 is not None:
             result['PCT_ACTIFS'] = safe_ratio(pop2064, pop)
 
-        # Proportion d'immigrés et d'étrangers
         pop_imm = get_col('P21_POP_IMM', 'P20_POP_IMM')
         if pop_imm is not None:
             result['PCT_IMM'] = safe_ratio(pop_imm, pop)
 
-        pop_etr = get_col('P21_POP_ETR', 'P20_POP_ETR')
-        if pop_etr is not None:
-            result['PCT_ETR'] = safe_ratio(pop_etr, pop)
-
-        # Densité d'établissements pour 1000 habitants
         nb_etab = get_col('NB_ETABLISSEMENTS')
         if nb_etab is not None:
             result['DENSITE_ETAB'] = safe_ratio(nb_etab, pop) * 1000
@@ -121,16 +100,71 @@ def engineer_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Écrêtage des valeurs extrêmes
+# ---------------------------------------------------------------------------
+
+def clip_outliers(df: pd.DataFrame, feature_cols: list, low: float = 0.01, high: float = 0.99) -> pd.DataFrame:
+    """
+    Écrête les valeurs extrêmes (percentiles 1%-99%) pour réduire l'impact
+    des IRIS atypiques (quartiers étudiants à 0% retraités, hameaux agricoles…).
+    """
+    result = df.copy()
+    clipped = []
+    for col in feature_cols:
+        if col not in result.columns:
+            continue
+        s = pd.to_numeric(result[col], errors='coerce')
+        lo, hi = s.quantile(low), s.quantile(high)
+        if hi > lo:
+            result[col] = s.clip(lower=lo, upper=hi)
+            clipped.append(col)
+    logger.info(f"Écrêtage 1%-99% appliqué sur {len(clipped)} features.")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Suppression des features redondantes (corrélation trop élevée)
+# ---------------------------------------------------------------------------
+
+def remove_redundant_features(feature_cols: list, df: pd.DataFrame, threshold: float = 0.92) -> list:
+    """
+    Supprime les features trop corrélées entre elles pour éviter de donner
+    un poids double à une même information (ex : PCT_IMM ≈ PCT_ETR, r=0.97).
+    Conserve la première feature de chaque paire redondante.
+    """
+    if len(feature_cols) < 2:
+        return feature_cols
+
+    available = [c for c in feature_cols if c in df.columns]
+    if len(available) < 2:
+        return feature_cols
+
+    corr = df[available].dropna().corr().abs()
+    to_drop = set()
+    for i in range(len(available)):
+        for j in range(i + 1, len(available)):
+            if available[j] not in to_drop and corr.iloc[i, j] > threshold:
+                to_drop.add(available[j])
+                logger.info(
+                    f"Feature redondante supprimée : {available[j]} "
+                    f"(corrélée avec {available[i]}, r={corr.iloc[i,j]:.2f})"
+                )
+
+    return [c for c in feature_cols if c not in to_drop]
+
+
+# ---------------------------------------------------------------------------
 # Préparation des features
 # ---------------------------------------------------------------------------
 
 def prepare_features(df: pd.DataFrame, feature_cols: list = None):
     """
     Prépare la matrice de features :
-      - Utilise en priorité les features ratio (PREFERRED_FEATURES) si disponibles
-      - Suppression colonnes vides
-      - Imputation médiane
-      - Standardisation
+      1. Sélection des features ratio en priorité
+      2. Écrêtage des valeurs extrêmes
+      3. Suppression des features redondantes
+      4. Imputation médiane
+      5. Mise à l'échelle robuste (RobustScaler)
     """
     exclude = {
         "IRIS", "COM", "LIBCOM", "TYP_IRIS", "LAB_IRIS", "UU2020",
@@ -140,13 +174,10 @@ def prepare_features(df: pd.DataFrame, feature_cols: list = None):
     }
 
     if feature_cols is None:
-        # Priorité aux features ratio pour un clustering qualitatif
         preferred_available = [
             c for c in PREFERRED_FEATURES
             if c in df.columns and df[c].dtype in [np.float64, np.int64, float, int, np.float32]
         ]
-
-        # Compléter avec les features Filosofi (revenus, pauvreté, inégalités) si disponibles
         filosofi_cols = [
             c for c in df.columns
             if any(c.upper().startswith(p) for p in ['DISP_', 'TP6', 'GI', 'D1'])
@@ -155,23 +186,28 @@ def prepare_features(df: pd.DataFrame, feature_cols: list = None):
 
         if len(preferred_available) >= 5:
             feature_cols = list(dict.fromkeys(preferred_available + filosofi_cols))
-            logger.info(f"Features ratio sélectionnées en priorité ({len(feature_cols)} features).")
+            logger.info(f"Features ratio sélectionnées ({len(feature_cols)} features).")
         else:
-            # Fallback : toutes les colonnes numériques (comportement original)
             feature_cols = [
                 c for c in df.columns
                 if c not in exclude
                 and df[c].dtype in [np.float64, np.int64, float, int, np.float32]
             ]
-            logger.info(f"Fallback : toutes les features numériques ({len(feature_cols)} features).")
+            logger.info(f"Fallback : toutes les features numériques ({len(feature_cols)}).")
 
     # Suppression colonnes 100% vides
     df_temp = df[feature_cols].dropna(axis=1, how="all")
     feature_cols = df_temp.columns.tolist()
 
-    logger.info(f"{len(feature_cols)} features retenues : {feature_cols}")
+    # Écrêtage des valeurs extrêmes (réduit l'impact des IRIS atypiques)
+    df_clipped = clip_outliers(df, feature_cols)
 
-    df_feat = df[["IRIS"] + feature_cols].copy()
+    # Suppression des features redondantes
+    feature_cols = remove_redundant_features(feature_cols, df_clipped)
+
+    logger.info(f"{len(feature_cols)} features retenues après dédoublonnage : {feature_cols}")
+
+    df_feat = df_clipped[["IRIS"] + feature_cols].copy()
     df_feat = df_feat[df_feat[feature_cols].notna().any(axis=1)]
 
     if df_feat.empty:
@@ -184,7 +220,7 @@ def prepare_features(df: pd.DataFrame, feature_cols: list = None):
     imputer = SimpleImputer(strategy="median")
     X_imp = imputer.fit_transform(X)
 
-    scaler = StandardScaler()
+    scaler = RobustScaler()   # résistant aux outliers résiduels après écrêtage
     X_scaled = scaler.fit_transform(X_imp)
 
     logger.info(f"Matrice finale : {X_scaled.shape}")
@@ -215,20 +251,20 @@ def find_optimal_k(X_scaled: np.ndarray, k_min: int = 3, k_max: int = 12):
             "inertia": km.inertia_,
         })
         logger.info(
-            f"Test K={k} → silhouette={sil:.3f}, "
+            f"K={k} → silhouette={sil:.3f}, "
             f"davies_bouldin={db:.3f}, calinski_harabasz={ch:.1f}"
         )
 
     df_metrics = pd.DataFrame(results)
 
-    # Score composite normalisé : silhouette (60%) + Davies-Bouldin inversé (25%) + Calinski-Harabasz (15%)
+    # Score composite normalisé : silhouette (60%) + DB inversé (25%) + CH (15%)
     def norm01(s):
         lo, hi = s.min(), s.max()
         return (s - lo) / (hi - lo + 1e-9)
 
     sil_norm = norm01(df_metrics["silhouette"])
-    db_norm = 1 - norm01(df_metrics["davies_bouldin"])   # inversé : plus bas = mieux
-    ch_norm = norm01(df_metrics["calinski_harabasz"])
+    db_norm  = 1 - norm01(df_metrics["davies_bouldin"])
+    ch_norm  = norm01(df_metrics["calinski_harabasz"])
 
     df_metrics["score"] = 0.60 * sil_norm + 0.25 * db_norm + 0.15 * ch_norm
     k_optimal = int(df_metrics.loc[df_metrics["score"].idxmax(), "k"])
@@ -277,12 +313,14 @@ def profile_clusters(df_original, iris_codes, labels, feature_cols):
 
 def name_clusters(profile: pd.DataFrame) -> dict:
     """
-    Attribue un nom descriptif à chaque cluster en comparant leurs profils
-    via des z-scores relatifs sur les dimensions clés.
+    Génère un nom + une description pour chaque cluster.
+
+    La logique utilise des z-scores inter-clusters sur les dimensions clés.
+    Seuil : z > 0.6 pour qualifier une dimension comme distinctive.
 
     Returns
     -------
-    dict : {cluster_id: str}
+    dict : {cluster_id: {"nom": str, "description": str}}
     """
 
     def best_col(*candidates):
@@ -292,20 +330,17 @@ def name_clusters(profile: pd.DataFrame) -> dict:
         return None
 
     def z_series(col):
-        """Z-score inter-cluster pour identifier les dimensions distinctives."""
         if col is None:
             return pd.Series(0.0, index=profile.index)
         vals = pd.to_numeric(profile[col], errors='coerce')
         std = vals.std()
-        if std > 1e-9:
-            return (vals - vals.mean()) / std
-        return pd.Series(0.0, index=profile.index)
+        return (vals - vals.mean()) / std if std > 1e-9 else pd.Series(0.0, index=profile.index)
 
-    # Détection des colonnes clés (avec fallbacks P21_/P20_)
     col_pop     = best_col('LOG_POP', 'P21_POP', 'P20_POP')
     col_cs1     = best_col('PCT_CS1', 'C20_POP15P_CS1', 'C21_POP15P_CS1')
     col_cs2     = best_col('PCT_CS2', 'C20_POP15P_CS2', 'C21_POP15P_CS2')
     col_cs3     = best_col('PCT_CS3', 'C20_POP15P_CS3', 'C21_POP15P_CS3')
+    col_cs4     = best_col('PCT_CS4', 'C20_POP15P_CS4', 'C21_POP15P_CS4')
     col_cs5     = best_col('PCT_CS5', 'C20_POP15P_CS5', 'C21_POP15P_CS5')
     col_cs6     = best_col('PCT_CS6', 'C20_POP15P_CS6', 'C21_POP15P_CS6')
     col_cs7     = best_col('PCT_CS7', 'C20_POP15P_CS7', 'C21_POP15P_CS7')
@@ -330,9 +365,9 @@ def name_clusters(profile: pd.DataFrame) -> dict:
     z_vacance = z_series(col_vacance)
     z_proprio = z_series(col_proprio)
 
-    T = 0.6  # seuil z-score : caractéristique considérée comme distinctive
+    T = 0.6  # seuil z-score pour considérer une dimension comme distinctive
 
-    names = {}
+    result = {}
 
     for cid in profile.index:
 
@@ -346,20 +381,28 @@ def name_clusters(profile: pd.DataFrame) -> dict:
 
         # --- 2. Type socio-économique ---
         socio = []
+
         if z_cs1[cid] > T:
             socio.append("agricole")
-        if z_cs3[cid] > T:
-            socio.append("aisé (cadres)")
-        elif z_cs3[cid] < -T and z_cs6[cid] > T:
-            socio.append("ouvrier")
-        elif z_cs3[cid] < -T and z_cs5[cid] > T:
-            socio.append("employés")
-        if z_imm[cid] > T and z_cs5[cid] > T:
-            socio.append("populaire & diversifié")
-        elif z_imm[cid] > T:
-            socio.append("forte immigration")
+
         if z_cs2[cid] > T:
             socio.append("commerçants / artisans")
+
+        if z_cs3[cid] > T:
+            socio.append("aisé (cadres)")
+
+        # Populaire & diversifié : forte immigration ET employés/ouvriers
+        if z_imm[cid] > T and (z_cs5[cid] > T or z_cs6[cid] > T):
+            socio.append("populaire & diversifié")
+        else:
+            # Ouvriers (condition indépendante du niveau de cadres)
+            if z_cs6[cid] > T:
+                socio.append("ouvrier")
+            elif z_cs5[cid] > T:
+                socio.append("employés")
+            if z_imm[cid] > T:
+                socio.append("forte immigration")
+
         if z_chom[cid] > T:
             socio.append("précarité")
 
@@ -369,25 +412,52 @@ def name_clusters(profile: pd.DataFrame) -> dict:
             demo.append("vieillissant")
         elif z_jeunes[cid] > T:
             demo.append("jeune")
+
         if z_cs7[cid] > T:
             demo.append("retraités")
 
-        # --- 4. Logement ---
         if z_proprio[cid] > T:
             demo.append("propriétaires")
         elif z_vacance[cid] > T:
             demo.append("logements vacants")
 
-        # Construction du nom
+        # --- Construction du nom ---
         parts = [urban]
         if socio:
             parts.append(", ".join(socio))
         if demo:
             parts.append(", ".join(demo))
+        nom = " — ".join(parts)
 
-        names[cid] = " — ".join(parts)
+        # --- Description avec valeurs réelles ---
+        n_iris = int(profile.loc[cid, 'n_iris'])
+        desc_items = [f"{n_iris:,} IRIS"]
 
-    return names
+        if col_pop == 'LOG_POP' and 'LOG_POP' in profile.columns:
+            pop_approx = int(np.expm1(profile.loc[cid, 'LOG_POP']))
+            desc_items.append(f"~{pop_approx:,} hab/IRIS")
+
+        def pct_stat(col, label):
+            if col and col in profile.columns:
+                v = profile.loc[cid, col]
+                if pd.notna(v):
+                    desc_items.append(f"{label} : {v*100:.0f}%")
+
+        pct_stat(col_cs3,     "Cadres")
+        pct_stat(col_cs6,     "Ouvriers")
+        pct_stat(col_cs5,     "Employés")
+        pct_stat(col_cs1,     "Agriculteurs")
+        pct_stat(col_seniors, "Seniors")
+        pct_stat(col_jeunes,  "Jeunes")
+        pct_stat(col_imm,     "Immigrés")
+        pct_stat(col_chom,    "Chômage")
+
+        result[cid] = {
+            "nom": nom,
+            "description": " · ".join(desc_items),
+        }
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -412,40 +482,34 @@ def save_results(df_labeled, profile, df_metrics, cluster_names=None):
 
 def run_full_pipeline(df):
 
-    # Ingénierie de features : création des ratios sociodémographiques
     logger.info("Ingénierie de features : création des ratios sociodémographiques...")
     df_enriched = engineer_ratio_features(df)
 
-    # Préparation de la matrice (priorité aux features ratio)
     X_scaled, iris_codes, feature_cols, scaler, imputer = prepare_features(df_enriched)
     if X_scaled is None:
         return None
 
-    # Sélection du K optimal
     df_metrics, k_opt = find_optimal_k(X_scaled)
     logger.info(f"K optimal = {k_opt}")
 
-    # Clustering final avec k optimal (mettre k_force à une valeur entière pour forcer)
-    k_force = None  # None = utiliser k_opt automatiquement
+    k_force = 5  # k=5 offre la granularité la plus utile (None = k_opt automatique)
     k_final = k_force if k_force else k_opt
     labels, model = run_kmeans(X_scaled, k_final)
 
-    # Réductions de dimension
     X_pca, _ = compute_pca(X_scaled)
     X_umap, _ = compute_umap(X_scaled)
 
-    # Profiling (utiliser le df enrichi pour avoir les features ratio dans le profil)
     df_labeled, profile = profile_clusters(df_enriched, iris_codes, labels, feature_cols)
     df_labeled["pca_x"], df_labeled["pca_y"] = X_pca[:, 0], X_pca[:, 1]
-
     if X_umap is not None:
         df_labeled["umap_x"], df_labeled["umap_y"] = X_umap[:, 0], X_umap[:, 1]
 
-    # Nommage des clusters
     cluster_names = name_clusters(profile)
+
     logger.info("Noms des clusters :")
-    for cid, name in cluster_names.items():
-        logger.info(f"  Cluster {cid} ({profile.loc[cid, 'n_iris']:,} IRIS) : {name}")
+    for cid, info in cluster_names.items():
+        logger.info(f"  Cluster {cid} : {info['nom']}")
+        logger.info(f"    → {info['description']}")
 
     save_results(df_labeled, profile, df_metrics, cluster_names)
 
@@ -461,7 +525,8 @@ if __name__ == "__main__":
     df_raw = build_dataset()
     results = run_full_pipeline(df_raw)
     if results:
-        print(f"\n✅ Clustering terminé avec {results['k']} clusters.")
-        print("\nNoms des clusters :")
-        for cid, name in results['names'].items():
-            print(f"  Cluster {cid} : {name}")
+        print(f"\n✅ Clustering terminé avec {results['k']} clusters.\n")
+        for cid, info in results['names'].items():
+            n = results['profile'].loc[cid, 'n_iris']
+            print(f"  Cluster {cid} ({n:,} IRIS) : {info['nom']}")
+            print(f"    {info['description']}")

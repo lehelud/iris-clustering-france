@@ -1,7 +1,22 @@
 {
-  "0": "Urbain dense — aisé (cadres)",
-  "1": "Urbain dense — populaire & diversifié — jeune",
-  "2": "Périurbain / bourg — commerçants / artisans — vieillissant, retraités",
-  "3": "Périurbain / bourg",
-  "4": "Rural — agricole — vieillissant"
+  "0": {
+    "nom": "Périurbain / bourg — ouvrier — jeune",
+    "description": "22,214 IRIS · ~718 hab/IRIS · Cadres : 6% · Ouvriers : 16% · Employés : 17% · Agriculteurs : 1% · Seniors : 25% · Jeunes : 19% · Immigrés : 4%"
+  },
+  "1": {
+    "nom": "Rural — agricole — vieillissant",
+    "description": "4,379 IRIS · ~152 hab/IRIS · Cadres : 4% · Ouvriers : 13% · Employés : 12% · Agriculteurs : 14% · Seniors : 34% · Jeunes : 15% · Immigrés : 4%"
+  },
+  "2": {
+    "nom": "Urbain dense — populaire & diversifié — jeune",
+    "description": "4,768 IRIS · ~1,949 hab/IRIS · Cadres : 6% · Ouvriers : 15% · Employés : 19% · Agriculteurs : 0% · Seniors : 20% · Jeunes : 21% · Immigrés : 25%"
+  },
+  "3": {
+    "nom": "Périurbain / bourg — commerçants / artisans — vieillissant, retraités",
+    "description": "12,337 IRIS · ~526 hab/IRIS · Cadres : 5% · Ouvriers : 12% · Employés : 13% · Agriculteurs : 2% · Seniors : 39% · Jeunes : 14% · Immigrés : 5%"
+  },
+  "4": {
+    "nom": "Urbain dense — aisé (cadres)",
+    "description": "5,575 IRIS · ~1,849 hab/IRIS · Cadres : 22% · Ouvriers : 6% · Employés : 13% · Agriculteurs : 0% · Seniors : 23% · Jeunes : 16% · Immigrés : 12%"
+  }
 }
